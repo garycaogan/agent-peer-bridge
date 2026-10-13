@@ -179,6 +179,35 @@ class RelayStateTest(unittest.TestCase):
             self.relay.claim(self.peer, "rx:one")
 
 
+class ExecutorReliabilityTest(unittest.TestCase):
+    def config(self, state):
+        workspace = Path(tempfile.mkdtemp())
+        return {"state_dir": str(state), "workspaces": {"main": str(workspace)},
+                "backend": "claude-code", "backend_options": {"binary": "/nonexistent/claude"}}
+
+    def test_one_executor_per_state_dir(self):
+        state = Path(tempfile.mkdtemp())
+        first = Executor(self.config(state))
+        with self.assertRaises(SystemExit):
+            Executor(self.config(state))
+        self.assertIsNotNone(first)
+
+    def test_interrupted_launch_is_never_rerun(self):
+        state = Path(tempfile.mkdtemp())
+        sid = "11111111-2222-3333-4444-555555555555"
+        (state / "sessions.json").write_text(json.dumps({sid: {
+            "title": "t", "workspace": "main", "cwd": "/tmp", "native_id": sid, "fork_native": None,
+            "model": None, "effort": None, "turns": 1, "logs": [], "queue": ["next message"], "pid": None,
+            "status": "launching", "launching": 1.0, "created_at": 1.0, "updated_at": 1.0}}))
+        executor = Executor(self.config(state))
+        item = executor.sessions[sid]
+        self.assertEqual(item["status"], "uncertain")
+        self.assertEqual(item["queue"], [], "queued work must not run behind an unknown outcome")
+        self.assertEqual(item["last_result"]["dropped_queued_messages"], 1)
+        executor.pump()  # must not launch anything (the binary does not even exist)
+        self.assertIsNone(executor.sessions[sid]["pid"])
+
+
 class McpFramingTest(unittest.TestCase):
     def test_peer_rejection_sets_mcp_is_error(self):
         class Stub:

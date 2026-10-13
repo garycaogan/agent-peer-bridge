@@ -16,6 +16,7 @@ Rules this file enforces (see docs/security.md):
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
@@ -82,6 +83,12 @@ class Executor:
         self.state = Path(config.get("state_dir", "~/.agent-peer-bridge/state")).expanduser()
         self.state.mkdir(parents=True, exist_ok=True, mode=0o700)
         (self.state / "turns").mkdir(exist_ok=True, mode=0o700)
+        # One executor per state directory: a second one would race on the registry and the queue.
+        self._lock = open(self.state / "executor.lock", "w")
+        try:
+            fcntl.flock(self._lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise SystemExit(f"another executor is already using {self.state}") from None
         self.workspaces = {name: str(Path(path).expanduser().resolve(strict=True))
                            for name, path in config["workspaces"].items()}
         self.backend = BACKENDS[config.get("backend", "claude-code")](config.get("backend_options", {}))
@@ -90,6 +97,7 @@ class Executor:
         self.registry_path = self.state / "sessions.json"
         self.sessions = json.loads(self.registry_path.read_text()) if self.registry_path.exists() else {}
         self.processes = {}  # keep child handles so another Popen cannot reap their exit status
+        self.recover_interrupted_launches()
         receiver = self.state / "receiver.id"  # stable, so a restart resumes its own relay lease
         if not receiver.exists():
             receiver.write_text("exec_" + uuid.uuid4().hex)
@@ -97,6 +105,20 @@ class Executor:
 
     def save(self):
         write_private_json(self.registry_path, self.sessions)
+
+    def recover_interrupted_launches(self):
+        """A turn journaled as launching but never given a pid may or may not have run: never rerun it."""
+        changed = False
+        for item in self.sessions.values():
+            if item.pop("launching", None) is not None and not item.get("pid"):
+                dropped, item["queue"] = len(item["queue"]), []  # do not build on an unknown outcome
+                item.update(status="uncertain", updated_at=time.time(), last_result={
+                    "is_error": True, "exit_code": None, "dropped_queued_messages": dropped,
+                    "result": "the executor stopped while starting this turn; it may or may not have run. "
+                              "Read the session, then send what is still needed."})
+                changed = True
+        if changed:
+            self.save()
 
     # ---- local supervision -----------------------------------------------------------------------
     def running(self):
@@ -111,6 +133,12 @@ class Executor:
                                                title=item["title"])
         out_path = self.state / "turns" / f"{sid}.{item['turns'] + 1}.jsonl"
         err_path = out_path.with_suffix(".stderr")
+        # Journal the turn (message already dequeued) before starting it, so a crash between the two
+        # can only leave an "uncertain" turn behind, never a message that runs twice.
+        item["turns"] += 1
+        item["logs"].append(str(out_path))
+        item.update(launching=time.time(), status="launching", stderr_log=str(err_path), updated_at=time.time())
+        self.save()
         with tempfile.TemporaryFile() as prompt, open(out_path, "wb") as out, open(err_path, "wb") as err:
             os.chmod(out_path, 0o600)
             os.chmod(err_path, 0o600)
@@ -118,10 +146,10 @@ class Executor:
             prompt.seek(0)
             process = subprocess.Popen(argv, cwd=item["cwd"], env={**self.backend.clean_env(), **extra_env},
                                        stdin=prompt, stdout=out, stderr=err, start_new_session=True)
-        item["turns"] += 1
-        item["logs"].append(str(out_path))
         self.processes[sid] = process
-        item.update(pid=process.pid, status="running", stderr_log=str(err_path), updated_at=time.time())
+        item.pop("launching", None)
+        item.update(pid=process.pid, status="running", updated_at=time.time())
+        self.save()
         log(f"launched session={sid} turn={item['turns']} pid={process.pid}")
 
     @staticmethod

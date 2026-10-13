@@ -61,12 +61,14 @@ Network failures are ambiguous. The bridge never converts ambiguity into a retry
 
 ## Executor reliability limits
 
-Run only one executor per state directory. Its stable `receiver.id` helps resume the relay lease,
-but is not a local process lock: two executors using that same id can both receive work and overwrite
-the session registry.
+One executor per state directory is enforced with a file lock (`executor.lock`); a second one exits.
+Its stable `receiver.id` lets a restarted executor resume its own relay lease.
 
-Relay request deduplication does not guarantee exactly-once agent execution across executor crashes.
-Launching a subprocess and saving its PID/dequeued message are separate steps. A crash between them
-can leave the old queued message on disk, so a restarted executor can launch it again. Inspect and
-reconcile local turns before restarting after an ambiguous crash; do not use this version for
-irreversible unattended actions without additional launch journaling and recovery controls.
+Each turn is journaled as `launching`, with its message already removed from the queue, before the
+agent process starts, and the PID is saved right after. If the executor dies in between, the restart
+marks that turn `uncertain` and drops the messages queued behind it instead of running anything
+again. So a message runs at most once, and an ambiguous turn is reported, not repeated.
+
+What this does not give you is exactly-once side effects inside a turn: an agent that was interrupted
+mid-turn may have done part of its work. Read the session before resending, and keep irreversible
+actions behind the owner's own approvals, which the bridge never grants.
