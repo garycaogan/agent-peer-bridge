@@ -1,0 +1,13 @@
+# ~/.config/systemd/user/agent-peer-bridge-executor.service
+# systemctl --user enable --now agent-peer-bridge-executor
+[Unit]
+Description=agent-peer-bridge executor
+After=network-online.target
+
+[Service]
+ExecStart=%h/.local/bin/apb-executor --config %h/.agent-peer-bridge/executor.json
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

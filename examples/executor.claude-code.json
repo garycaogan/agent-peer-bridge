@@ -1,0 +1,14 @@
+{
+  "relay_url": "https://relay.example.com",
+  "peer_token_file": "~/.agent-peer-bridge/peer.token",
+  "state_dir": "~/.agent-peer-bridge/state",
+  "backend": "claude-code",
+  "backend_options": {
+    "permission_mode": "auto",
+    "oauth_token_file": "~/.agent-peer-bridge/claude-oauth.token"
+  },
+  "workspaces": {
+    "main": "~/code/main-repo"
+  },
+  "max_running": 3
+}

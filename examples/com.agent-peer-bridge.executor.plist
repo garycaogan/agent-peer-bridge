@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Copy to ~/Library/LaunchAgents/, fix the paths, then:
+     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.agent-peer-bridge.executor.plist -->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.agent-peer-bridge.executor</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/apb-executor</string>
+    <string>--config</string>
+    <string>/Users/YOU/.agent-peer-bridge/executor.json</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>30</integer>
+  <key>StandardErrorPath</key><string>/Users/YOU/.agent-peer-bridge/executor.log</string>
+</dict>
+</plist>

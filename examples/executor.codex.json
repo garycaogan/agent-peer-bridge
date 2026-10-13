@@ -1,0 +1,13 @@
+{
+  "relay_url": "https://relay.example.com",
+  "peer_token_file": "~/.agent-peer-bridge/peer.token",
+  "state_dir": "~/.agent-peer-bridge/state",
+  "backend": "codex",
+  "backend_options": {
+    "sandbox": "workspace-write"
+  },
+  "workspaces": {
+    "main": "~/code/main-repo"
+  },
+  "max_running": 3
+}

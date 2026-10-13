@@ -1,0 +1,81 @@
+"""Codex backend: headless `codex exec --json` turns, resumed by the thread id Codex reports.
+
+Status: written against the documented `codex exec` interface; verify with your Codex version
+(`codex exec --help`) before relying on it. Codex picks its own session id, so the executor learns
+it from the first JSON event and only then can a follow-up turn resume it.
+"""
+from __future__ import annotations
+
+import os
+import shutil
+
+
+def _clip(text, limit):
+    return text if len(text) <= limit else text[:limit] + f"…(+{len(text) - limit})"
+
+
+class CodexBackend:
+    name = "codex"
+    preassigns_ids = False
+    supports_fork = False
+
+    def __init__(self, options):
+        self.binary = options.get("binary") or shutil.which("codex")
+        if not self.binary:
+            raise RuntimeError("codex not found: install the Codex CLI or set backend_options.binary")
+        # Fixed by the machine owner in config; remote callers can never change these.
+        self.sandbox = options.get("sandbox", "workspace-write")
+        self.extra = list(options.get("extra_args", []))
+
+    def command(self, *, native_id, first_turn, fork_native, model, effort, title):
+        if fork_native:
+            raise ValueError("the codex backend cannot fork sessions")
+        argv = [self.binary, "exec", "--json", "--skip-git-repo-check", "--sandbox", self.sandbox, *self.extra]
+        if model:
+            argv += ["--model", model]
+        if effort:
+            argv += ["-c", f"model_reasoning_effort={effort}"]
+        if not first_turn:
+            argv += ["resume", native_id]
+        argv.append("-")  # read the prompt from stdin
+        return argv, {}
+
+    @staticmethod
+    def native_id_from(record):
+        if record.get("type") == "thread.started":
+            return record.get("thread_id")
+        message = record.get("msg") if isinstance(record.get("msg"), dict) else {}
+        if message.get("type") == "session_configured":  # older event format
+            return message.get("session_id")
+        return None
+
+    @staticmethod
+    def events(record):
+        kind = record.get("type")
+        item = record.get("item") if isinstance(record.get("item"), dict) else {}
+        if kind == "item.completed":
+            if item.get("type") == "agent_message":
+                return [{"role": "assistant", "text": _clip(item.get("text", ""), 2000)}]
+            if item.get("type") == "command_execution":
+                return [{"role": "tool", "tool": "shell", "hint": _clip(str(item.get("command", "")), 200),
+                         **({"error": True} if item.get("exit_code") not in (0, None) else {})}]
+            if item.get("type") in ("file_change", "mcp_tool_call", "web_search"):
+                return [{"role": "tool", "tool": item["type"]}]
+        if kind in ("turn.failed", "error"):
+            error = record.get("error") or {}
+            text = error.get("message") if isinstance(error, dict) else record.get("message")
+            return [{"role": "result", "is_error": True, "text": _clip(str(text or "turn failed"), 4000)}]
+        message = record.get("msg") if isinstance(record.get("msg"), dict) else {}
+        if message.get("type") == "agent_message":  # older event format
+            return [{"role": "assistant", "text": _clip(message.get("message", ""), 2000)}]
+        return []
+
+    def native_sessions(self, cwd):
+        return []  # read-only listing of the user's own Codex sessions is not implemented yet
+
+    def native_records(self, cwd, native_id):
+        return []
+
+    @staticmethod
+    def clean_env():
+        return dict(os.environ)

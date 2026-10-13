@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-peer-bridge"
+version = "0.1.0"
+description = "Let coding agents on different machines start, continue and read each other's sessions through a small relay."
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Gary (曹淦)"}]
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+apb-relay = "apb.relay:main"
+apb-executor = "apb.executor:main"
+apb-mcp = "apb.mcp_server:main"
+
+[tool.setuptools]
+packages = ["apb", "apb.backends"]
