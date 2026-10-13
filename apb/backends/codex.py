@@ -1,8 +1,7 @@
 """Codex backend: headless `codex exec --json` turns, resumed by the thread id Codex reports.
 
-Status: written against the documented `codex exec` interface; verify with your Codex version
-(`codex exec --help`) before relying on it. Codex picks its own session id, so the executor learns
-it from the first JSON event and only then can a follow-up turn resume it.
+Verified with codex-cli 0.162.0-alpha.17.2: two real turns, stdin prompts and a shell command.
+Codex picks its own session id, so the executor learns it from thread.started before resuming.
 """
 from __future__ import annotations
 
@@ -30,7 +29,8 @@ class CodexBackend:
     def command(self, *, native_id, first_turn, fork_native, model, effort, title):
         if fork_native:
             raise ValueError("the codex backend cannot fork sessions")
-        argv = [self.binary, "exec", "--json", "--skip-git-repo-check", "--sandbox", self.sandbox, *self.extra]
+        argv = [self.binary, "exec", "--json", "--skip-git-repo-check", "--sandbox", self.sandbox,
+                "-c", "approval_policy=never", *self.extra]
         if model:
             argv += ["--model", model]
         if effort:
@@ -58,12 +58,13 @@ class CodexBackend:
                 return [{"role": "assistant", "text": _clip(item.get("text", ""), 2000)}]
             if item.get("type") == "command_execution":
                 return [{"role": "tool", "tool": "shell", "hint": _clip(str(item.get("command", "")), 200),
-                         **({"error": True} if item.get("exit_code") not in (0, None) else {})}]
+                         **({"error": True} if item.get("status") == "failed" or
+                            item.get("exit_code") not in (0, None) else {})}]
             if item.get("type") in ("file_change", "mcp_tool_call", "web_search"):
                 return [{"role": "tool", "tool": item["type"]}]
         if kind in ("turn.failed", "error"):
-            error = record.get("error") or {}
-            text = error.get("message") if isinstance(error, dict) else record.get("message")
+            error = record.get("error")
+            text = (error.get("message") if isinstance(error, dict) else error) or record.get("message")
             return [{"role": "result", "is_error": True, "text": _clip(str(text or "turn failed"), 4000)}]
         message = record.get("msg") if isinstance(record.get("msg"), dict) else {}
         if message.get("type") == "agent_message":  # older event format
@@ -78,4 +79,6 @@ class CodexBackend:
 
     @staticmethod
     def clean_env():
-        return dict(os.environ)
+        return {key: value for key, value in os.environ.items()
+                if not key.startswith(("CLAUDE", "ANTHROPIC")) and
+                key not in {"CODEX_SESSION_ID", "CODEX_THREAD_ID"}}

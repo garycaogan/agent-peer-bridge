@@ -51,3 +51,22 @@ Network failures are ambiguous. The bridge never converts ambiguity into a retry
 - Multi-tenant hosting: one relay is meant for one owner and their machines.
 - End-to-end encryption between caller and peer: the relay sees prompts and results. Run it
   yourself, behind TLS.
+- Per-caller session isolation: callers granted the same peer share its bridge sessions, including
+  read, continue and stop operations. Session ownership is not tracked per caller.
+- Read isolation by workspace: workspace names select a working directory, not an OS security
+  boundary. Codex's `workspace-write` sandbox can allow reads outside that directory; existing MCP
+  integrations and local credentials also need their own access controls.
+- Business approvals: a remote prompt is not the machine owner's approval for spending money,
+  publishing private material or changing access. Enforce those policies separately.
+
+## Executor reliability limits
+
+Run only one executor per state directory. Its stable `receiver.id` helps resume the relay lease,
+but is not a local process lock: two executors using that same id can both receive work and overwrite
+the session registry.
+
+Relay request deduplication does not guarantee exactly-once agent execution across executor crashes.
+Launching a subprocess and saving its PID/dequeued message are separate steps. A crash between them
+can leave the old queued message on disk, so a restarted executor can launch it again. Inspect and
+reconcile local turns before restarting after an ambiguous crash; do not use this version for
+irreversible unattended actions without additional launch journaling and recovery controls.

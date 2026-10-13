@@ -121,7 +121,7 @@ Protocol details: [docs/protocol.md](docs/protocol.md). Threat model: [docs/secu
   sessions; Claude Desktop can adopt them via *Help → Troubleshooting → Import Claude Code CLI
   Sessions…* — after that, treat them as yours (read/fork from the bridge, don't continue both).
 - **Codex** — `codex exec --json`, resumed by the thread id Codex reports. No fork.
-  See the status note at the top of [`apb/backends/codex.py`](apb/backends/codex.py).
+  Tested end to end with codex-cli 0.162.0-alpha.17.2 (new session, resume, stdin and shell execution).
 
 ## Limits
 

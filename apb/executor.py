@@ -89,6 +89,7 @@ class Executor:
         self.relay = relay
         self.registry_path = self.state / "sessions.json"
         self.sessions = json.loads(self.registry_path.read_text()) if self.registry_path.exists() else {}
+        self.processes = {}  # keep child handles so another Popen cannot reap their exit status
         receiver = self.state / "receiver.id"  # stable, so a restart resumes its own relay lease
         if not receiver.exists():
             receiver.write_text("exec_" + uuid.uuid4().hex)
@@ -109,15 +110,18 @@ class Executor:
                                                model=item.get("model"), effort=item.get("effort"),
                                                title=item["title"])
         out_path = self.state / "turns" / f"{sid}.{item['turns'] + 1}.jsonl"
-        with tempfile.TemporaryFile() as prompt, open(out_path, "wb") as out:
+        err_path = out_path.with_suffix(".stderr")
+        with tempfile.TemporaryFile() as prompt, open(out_path, "wb") as out, open(err_path, "wb") as err:
             os.chmod(out_path, 0o600)
+            os.chmod(err_path, 0o600)
             prompt.write(text.encode())
             prompt.seek(0)
             process = subprocess.Popen(argv, cwd=item["cwd"], env={**self.backend.clean_env(), **extra_env},
-                                       stdin=prompt, stdout=out, stderr=subprocess.DEVNULL, start_new_session=True)
+                                       stdin=prompt, stdout=out, stderr=err, start_new_session=True)
         item["turns"] += 1
         item["logs"].append(str(out_path))
-        item.update(pid=process.pid, status="running", updated_at=time.time())
+        self.processes[sid] = process
+        item.update(pid=process.pid, status="running", stderr_log=str(err_path), updated_at=time.time())
         log(f"launched session={sid} turn={item['turns']} pid={process.pid}")
 
     @staticmethod
@@ -143,8 +147,14 @@ class Executor:
                 if found:
                     item["native_id"], changed = found, True
             if item.get("pid"):
-                running, code = alive(item["pid"])
+                process = self.processes.get(sid)
+                if process is None:  # a turn that survived an executor restart
+                    running, code = alive(item["pid"])
+                else:
+                    code = process.poll()
+                    running = code is None
                 if not running:
+                    self.processes.pop(sid, None)
                     item.update(pid=None, updated_at=time.time(), last_result=self.turn_result(item, code),
                                 status="stopped" if item.pop("stop_requested", False) else "idle")
                     changed = True
@@ -161,7 +171,19 @@ class Executor:
         final = next((e for e in reversed(events) if e["role"] == "result"), None)
         reply = next((e["text"] for e in reversed(events) if e["role"] == "assistant"), "")
         failed = (final or {}).get("is_error") or exit_code not in (0, None)
-        return {"is_error": bool(failed), "result": (final or {}).get("text") or reply, "exit_code": exit_code,
+        result = (final or {}).get("text") or reply
+        if failed and not result:
+            try:
+                with open(item.get("stderr_log", ""), "rb") as stream:
+                    stream.seek(max(0, os.fstat(stream.fileno()).st_size - 4000))
+                    result = stream.read(4000).decode("utf-8", errors="replace").strip()
+            except OSError:
+                pass
+            secret = getattr(self.backend, "token", None)
+            if secret:
+                result = result.replace(secret, "[REDACTED]")
+            result = result or f"agent exited with status {exit_code}"
+        return {"is_error": bool(failed), "result": result, "exit_code": exit_code,
                 "permission_denials": (final or {}).get("permission_denials")}
 
     # ---- operations ------------------------------------------------------------------------------

@@ -58,7 +58,7 @@ apb-executor --config ~/.agent-peer-bridge/executor.json
 ## 后端
 
 - **Claude Code**：用 `claude -p --output-format stream-json` 配合 `--session-id`、`--resume`、`--fork-session` 驱动，已经端到端实测。在 macOS 上如果没装命令行版，会自动用 Claude Desktop 内置的那份 Claude Code。它新建的会话就是普通的 Claude Code 会话，可以通过 Claude Desktop 菜单 Help → Troubleshooting → Import Claude Code CLI Sessions… 导入侧边栏。导入之后，这个会话就算你的了：桥这边只读或分叉，不要两边同时续写。
-- **Codex**：用 `codex exec --json` 驱动，按 Codex 返回的线程 ID 续接，不支持分叉。当前状态见 [`apb/backends/codex.py`](apb/backends/codex.py) 文件开头的说明。
+- **Codex**：用 `codex exec --json` 驱动，按 Codex 返回的线程 ID 续接，不支持分叉。已用 codex-cli 0.162.0-alpha.17.2 完成新建、续接、stdin 提示词及 shell 执行的端到端实测。
 
 ## 限制
 

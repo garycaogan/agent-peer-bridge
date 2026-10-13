@@ -124,7 +124,9 @@ def serve(adapter, stdin=sys.stdin, stdout=sys.stdout):
                 send({"jsonrpc": "2.0", "id": request_id, "error": {"code": -32602, "message": "invalid tool or arguments"}})
                 continue
             try:
-                data, is_error = adapter.call(name, args), False
+                data = adapter.call(name, args)
+                is_error = bool(data.get("is_error")) or data.get("status") in (
+                    "failed", "expired", "cancelled", "uncertain")
             except RelayError as error:
                 data, is_error = {"error": error.code, "message": str(error), "uncertain": error.uncertain}, True
             send({"jsonrpc": "2.0", "id": request_id, "result": {

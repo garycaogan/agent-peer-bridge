@@ -57,7 +57,8 @@ class BridgeTest(unittest.TestCase):
                   "backend": "claude-code", "backend_options": {"binary": str(fake)}}
         self.executor = Executor(config, RelayClient(self.url, self.peer_token))
         self.stop = threading.Event()
-        threading.Thread(target=self.run_executor, daemon=True).start()
+        self.worker = threading.Thread(target=self.run_executor, daemon=True)
+        self.worker.start()
         self.adapter = Adapter(RelayClient(self.url, self.caller_token))
 
     def run_executor(self):
@@ -69,7 +70,12 @@ class BridgeTest(unittest.TestCase):
 
     def tearDown(self):
         self.stop.set()
+        self.worker.join(timeout=3)
+        for process in list(self.executor.processes.values()):
+            process.wait(timeout=5)
+        self.executor.pump()
         self.server.shutdown()
+        self.server.server_close()
 
     def call(self, name, **args):
         return self.adapter.call(name, args)
@@ -174,6 +180,17 @@ class RelayStateTest(unittest.TestCase):
 
 
 class McpFramingTest(unittest.TestCase):
+    def test_peer_rejection_sets_mcp_is_error(self):
+        class Stub:
+            def call(self, name, args):
+                return {"status": "failed", "is_error": True, "result": {"outcome": "rejected"}}
+        frame = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "start_session", "arguments": {
+                "peer": "p", "workspace": "scratch", "text": "x", "client_id": "test-0001"}}}
+        out = io.StringIO()
+        serve(Stub(), io.StringIO(json.dumps(frame) + "\n"), out)
+        self.assertTrue(json.loads(out.getvalue())["result"]["isError"])
+
     def test_meta_and_unknown_fields_are_tolerated(self):
         class Stub:
             def call(self, name, args):

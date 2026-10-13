@@ -13,6 +13,7 @@ Stdlib only. Tokens are stored as SHA-256 hashes and shown once at creation.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import argparse
 import hashlib
 import hmac
@@ -107,11 +108,16 @@ class Relay:
         with self.db() as db:
             db.executescript(SCHEMA)
 
+    @contextmanager
     def db(self):
         connection = sqlite3.connect(self.path, timeout=30, isolation_level=None)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        return connection
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA journal_mode=WAL")
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     # ---- administration (local CLI only) -------------------------------------------------------
     def add(self, name, kind, peers=()):
