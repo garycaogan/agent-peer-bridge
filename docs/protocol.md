@@ -20,11 +20,13 @@ reusing it for different content is a `409`.
 
 | Method | Path | Body / result |
 | --- | --- | --- |
-| `POST` | `/v1/peer/receive` | `{receiver_id, wait_seconds ≤ 25}` → `{request: {id, operation, args, delivery_token} \| null}` |
+| `POST` | `/v1/peer/receive` | `{receiver_id, wait_seconds ≤ 25}` → `{request: {id, operation, args, caller, delivery_token} \| null}` |
 | `POST` | `/v1/peer/reply` | `{request_id, delivery_token, result, is_error}` → request view |
 
 A peer has one live receiver at a time (`receiver_id`, 90 s lease renewed by each poll), so two
-executors cannot both drain the same queue. The `delivery_token` is minted per claim; only its
+executors cannot both drain the same queue. `caller` is the name of the caller token that
+enqueued the request (set by the relay, never by the request body), so the peer can apply that
+caller's access and rules. The `delivery_token` is minted per claim; only its
 holder can post the result, once. Posting the identical result again is a no-op.
 
 ## Request states

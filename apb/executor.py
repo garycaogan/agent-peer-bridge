@@ -43,6 +43,25 @@ class Rejected(Exception):
     """A request this executor will not run; reported back with is_error=true."""
 
 
+CALLER_SETTINGS = {"workspaces", "rules", "rules_file", "permission", "read_owner_sessions", "see_all_sessions"}
+
+
+class Policy:
+    """What one caller may do on this machine. It comes from the executor config, never from a request."""
+
+    def __init__(self, name, workspaces, rules=None, rules_file=None, permission=None,
+                 read_owner_sessions=False, see_all_sessions=False):
+        self.name, self.workspaces, self.permission = name, workspaces, permission or {}
+        self._rules, self._rules_file = rules, rules_file
+        self.read_owner_sessions, self.see_all_sessions = read_owner_sessions, see_all_sessions
+
+    def rules(self):
+        parts = [self._rules] if self._rules else []
+        if self._rules_file:  # read on every turn, so edits apply without restarting the executor
+            parts.append(Path(self._rules_file).expanduser().read_text(encoding="utf-8").strip())
+        return "\n\n".join(part for part in parts if part) or None
+
+
 def log(message):
     sys.stderr.write(time.strftime("%Y-%m-%dT%H:%M:%S ") + message + "\n")
     sys.stderr.flush()
@@ -92,6 +111,7 @@ class Executor:
         self.workspaces = {name: str(Path(path).expanduser().resolve(strict=True))
                            for name, path in config["workspaces"].items()}
         self.backend = BACKENDS[config.get("backend", "claude-code")](config.get("backend_options", {}))
+        self.callers = self.load_callers(config.get("callers"))
         self.max_running = int(config.get("max_running", 3))
         self.relay = relay
         self.registry_path = self.state / "sessions.json"
@@ -105,6 +125,42 @@ class Executor:
 
     def save(self):
         write_private_json(self.registry_path, self.sessions)
+
+    # ---- who may do what -------------------------------------------------------------------------
+    def load_callers(self, raw):
+        """No `callers` section is open mode: every caller the relay admits gets every workspace."""
+        if raw is None:
+            return None
+        callers = {}
+        for name, spec in raw.items():
+            unknown = set(spec) - CALLER_SETTINGS
+            if unknown:
+                raise SystemExit(f"caller {name}: unknown settings {sorted(unknown)}")
+            wanted = spec.get("workspaces", "*")
+            workspaces = sorted(self.workspaces) if wanted == "*" else list(wanted)
+            if set(workspaces) - set(self.workspaces):
+                raise SystemExit(f"caller {name}: unknown workspaces {sorted(set(workspaces) - set(self.workspaces))}")
+            permission = spec.get("permission") or {}
+            for key, value in permission.items():
+                if value not in self.backend.permission_keys.get(key, ()):
+                    raise SystemExit(f"caller {name}: {key}={value!r} is not a {self.backend.name} permission setting")
+            callers[name] = Policy(name, workspaces, spec.get("rules"), spec.get("rules_file"), permission,
+                                   bool(spec.get("read_owner_sessions")), bool(spec.get("see_all_sessions")))
+        return callers
+
+    def policy(self, caller):
+        if self.callers is None:
+            return Policy(caller or "anyone", sorted(self.workspaces), read_owner_sessions=True, see_all_sessions=True)
+        if caller not in self.callers:
+            raise Rejected("this requester is not allowed on this machine")
+        return self.callers[caller]
+
+    def session(self, who, session_id):
+        """A bridge session, if this caller may see it; other callers' sessions look nonexistent."""
+        item = self.sessions.get(session_id)
+        if item is not None and (who.see_all_sessions or item.get("caller") == who.name):
+            return item
+        return None
 
     def recover_interrupted_launches(self):
         """A turn journaled as launching but never given a pid may or may not have run: never rerun it."""
@@ -127,10 +183,21 @@ class Executor:
     def launch(self, sid, text):
         item = self.sessions[sid]
         first = item["turns"] == 0
+        try:  # the caller's current permissions and rules apply to every turn, including follow-ups
+            who = self.policy(item.get("caller"))
+            rules = who.rules()
+        except (Rejected, OSError) as error:
+            reason = "the requester is no longer allowed" if isinstance(error, Rejected) else "its rules file is unreadable"
+            item.update(queue=[], status="blocked", updated_at=time.time(),
+                        last_result={"is_error": True, "exit_code": None, "result": f"not started: {reason}"})
+            self.save()
+            log(f"blocked session={sid}: {reason}")
+            return
         argv, extra_env = self.backend.command(native_id=item["native_id"], first_turn=first,
                                                fork_native=item.get("fork_native") if first else None,
                                                model=item.get("model"), effort=item.get("effort"),
-                                               title=item["title"])
+                                               title=item["title"], permission=who.permission, rules=rules)
+        text = self.backend.prompt(text, rules)
         out_path = self.state / "turns" / f"{sid}.{item['turns'] + 1}.jsonl"
         err_path = out_path.with_suffix(".stderr")
         # Journal the turn (message already dequeued) before starting it, so a crash between the two
@@ -215,49 +282,53 @@ class Executor:
                 "permission_denials": (final or {}).get("permission_denials")}
 
     # ---- operations ------------------------------------------------------------------------------
-    def native(self, session_id):
-        """Resolve 'native:<workspace>:<id>' to a user-owned session inside an allowed workspace."""
+    def native(self, who, session_id):
+        """Resolve 'native:<workspace>:<id>' to an owner session this caller may read."""
         parts = session_id.split(":")
-        if len(parts) != 3 or parts[0] != "native" or parts[1] not in self.workspaces:
+        if (len(parts) != 3 or parts[0] != "native" or not who.read_owner_sessions
+                or parts[1] not in who.workspaces):
             raise Rejected("unknown session_id")
         cwd = self.workspaces[parts[1]]
         if not any(s["native_id"] == parts[2] for s in self.backend.native_sessions(cwd)):
             raise Rejected("unknown session_id")
         return cwd, parts[2]
 
-    def op_list_sessions(self, limit=20, cursor=None):
+    def op_list_sessions(self, who, limit=20, cursor=None):
         offset = int(cursor) if cursor and cursor.isdigit() else 0
         own_native = {item["native_id"] for item in self.sessions.values()}
         rows = [{"session_id": sid, "kind": "bridge", "title": item["title"], "workspace": item["workspace"],
                  "status": item["status"], "turns": item["turns"], "queued": len(item["queue"]),
                  "updated_at": item["updated_at"]}
-                for sid, item in sorted(self.sessions.items(), key=lambda pair: -pair[1]["updated_at"])]
-        for name, cwd in sorted(self.workspaces.items()):
-            for session in sorted(self.backend.native_sessions(cwd), key=lambda s: -s["updated_at"]):
-                if session["native_id"] not in own_native:
-                    rows.append({"session_id": f"native:{name}:{session['native_id']}", "kind": "native_read_only",
-                                 "title": session["title"], "workspace": name, "updated_at": session["updated_at"]})
-        return {"workspaces": sorted(self.workspaces), "sessions": rows[offset:offset + limit],
+                for sid, item in sorted(self.sessions.items(), key=lambda pair: -pair[1]["updated_at"])
+                if self.session(who, sid) is not None]
+        if who.read_owner_sessions:
+            for name in who.workspaces:
+                for session in sorted(self.backend.native_sessions(self.workspaces[name]), key=lambda s: -s["updated_at"]):
+                    if session["native_id"] not in own_native:
+                        rows.append({"session_id": f"native:{name}:{session['native_id']}", "kind": "native_read_only",
+                                     "title": session["title"], "workspace": name, "updated_at": session["updated_at"]})
+        return {"workspaces": who.workspaces, "sessions": rows[offset:offset + limit],
                 "next_cursor": str(offset + limit) if offset + limit < len(rows) else None}
 
-    def op_start_session(self, text, workspace, title=None, model=None, effort=None, fork_from=None):
-        if workspace not in self.workspaces:
-            raise Rejected(f"unknown workspace; available: {sorted(self.workspaces)}")
+    def op_start_session(self, who, text, workspace, title=None, model=None, effort=None, fork_from=None):
+        if workspace not in who.workspaces:
+            raise Rejected(f"unknown workspace; available to you: {who.workspaces}")
         if effort is not None and effort not in EFFORTS:
             raise Rejected("invalid effort")
         cwd, fork_native = self.workspaces[workspace], None
         if fork_from:
             if not self.backend.supports_fork:
                 raise Rejected(f"the {self.backend.name} backend cannot fork sessions")
-            if fork_from in self.sessions:
-                cwd, fork_native = self.sessions[fork_from]["cwd"], self.sessions[fork_from]["native_id"]
+            source = self.session(who, fork_from)
+            if source is not None:
+                cwd, fork_native = source["cwd"], source["native_id"]
             else:
-                cwd, fork_native = self.native(fork_from)
+                cwd, fork_native = self.native(who, fork_from)
         sid = str(uuid.uuid4())
         now = time.time()
         self.sessions[sid] = {
-            "title": (title or text.strip().splitlines()[0])[:80], "workspace": workspace, "cwd": cwd,
-            "native_id": sid if self.backend.preassigns_ids else None, "fork_native": fork_native,
+            "caller": who.name, "title": (title or text.strip().splitlines()[0])[:80], "workspace": workspace,
+            "cwd": cwd, "native_id": sid if self.backend.preassigns_ids else None, "fork_native": fork_native,
             "model": model, "effort": effort, "turns": 0, "logs": [], "queue": [text], "pid": None,
             "status": "queued", "created_at": now, "updated_at": now}
         self.save()
@@ -265,10 +336,10 @@ class Executor:
         return {"session_id": sid, "status": self.sessions[sid]["status"],
                 "note": "accepted, not finished: poll read_session for progress"}
 
-    def op_send_message(self, session_id, text):
-        item = self.sessions.get(session_id)
+    def op_send_message(self, who, session_id, text):
+        item = self.session(who, session_id)
         if item is None:
-            self.native(session_id)
+            self.native(who, session_id)
             raise Rejected("sessions you did not start through the bridge are read-only; start_session with fork_from")
         if item["turns"] and not item["native_id"] and not item.get("pid"):
             raise Rejected("this session failed before the agent reported its id; start a new session")
@@ -279,10 +350,10 @@ class Executor:
         return {"session_id": session_id, "status": item["status"], "queued": len(item["queue"]),
                 "note": "messages run in order after the current turn; delivery is not completion"}
 
-    def op_stop_session(self, session_id):
-        item = self.sessions.get(session_id)
+    def op_stop_session(self, who, session_id):
+        item = self.session(who, session_id)
         if item is None:
-            raise Rejected("only sessions started through the bridge can be stopped here")
+            raise Rejected("only your own bridge sessions can be stopped")
         dropped, item["queue"] = len(item["queue"]), []
         if item.get("pid"):
             item["stop_requested"] = True
@@ -294,14 +365,14 @@ class Executor:
         return {"session_id": session_id, "stop_requested": True, "dropped_queued_messages": dropped,
                 "note": "stopping does not undo actions already taken"}
 
-    def op_read_session(self, session_id, limit=30, cursor=None):
-        item = self.sessions.get(session_id)
+    def op_read_session(self, who, session_id, limit=30, cursor=None):
+        item = self.session(who, session_id)
         if item is not None:
             records, meta = list(self.records(item["logs"])), {
                 "kind": "bridge", "status": item["status"], "title": item["title"], "workspace": item["workspace"],
                 "turns": item["turns"], "queued": len(item["queue"]), "last_result": item.get("last_result")}
         else:
-            cwd, native_id = self.native(session_id)
+            cwd, native_id = self.native(who, session_id)
             records, meta = self.backend.native_records(cwd, native_id), {"kind": "native_read_only"}
         events = [event for record in records for event in self.backend.events(record)]
         start = int(cursor) if cursor and cursor.isdigit() else max(0, len(events) - limit)
@@ -313,6 +384,7 @@ class Executor:
 
     # ---- relay loop ------------------------------------------------------------------------------
     def handle(self, request):
+        who = self.policy(request.get("caller"))
         operation, args = request.get("operation"), request.get("args")
         method = getattr(self, f"op_{operation}", None) if isinstance(operation, str) else None
         if method is None or not isinstance(args, dict):
@@ -321,7 +393,7 @@ class Executor:
             if key in args and not (isinstance(args[key], str) and NAME.fullmatch(args[key])):
                 raise Rejected(f"invalid {key}")
         try:
-            return method(**args)
+            return method(who, **args)
         except TypeError:
             raise Rejected("unsupported arguments") from None
 

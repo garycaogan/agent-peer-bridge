@@ -7,7 +7,7 @@ assumptions and what each part does about them.
 
 | Credential | Worst case | Limits |
 | --- | --- | --- |
-| Caller token | Start/continue sessions on the peers it was granted, read their transcripts in configured workspaces | Cannot pick directories, permission modes, or peers outside its grant; cannot read other callers' requests. Revoke with `apb-relay revoke <name>`. |
+| Caller token | Start/continue its own sessions on the peers it was granted, within the workspaces, permissions and rules the peer owner configured for that caller | Cannot pick directories, permission modes, or peers outside its grant; cannot see other callers' requests or (with a `callers` section) their sessions. Revoke with `apb-relay revoke <name>`. |
 | Peer token | Take and answer work addressed to that peer (it could return false results) | Cannot enqueue anything, cannot see other peers' queues. |
 | Relay database | Request history (prompts and results) | Holds token hashes only. Keep it on a host you trust; back it up like any log with prompts in it. |
 
@@ -18,11 +18,17 @@ bearer token is never forwarded to another host.
 ## The peer machine
 
 - **Permissions are local.** `permission_mode` (Claude Code) and `sandbox` (Codex) are set in the
-  executor config. Prompts that would need a human are denied (`--permission-prompts none`) and show
+  executor config, globally or per caller. Prompts that would need a human are denied (`--permission-prompts none`) and show
   up in the session's result. Use the mode you would accept for a capable colleague working
   unsupervised in those directories — `auto`/`workspace-write`, not bypass.
 - **Workspaces are names.** Requests carry a workspace name; only the executor maps it to a
   directory. Session ids are validated, so `native:` lookups cannot escape a workspace.
+- **Each caller gets what the owner configured.** With a `callers` section, a caller is refused
+  unless listed; it can use only its workspaces, sees only its own bridge sessions (unless
+  `see_all_sessions`), reads the owner's sessions only with `read_owner_sessions`, and runs with its
+  own permission setting and rules. The caller identity comes from its relay token, not from the
+  request. Without a `callers` section the executor is in open mode: every admitted caller gets
+  every workspace and sees every session — meant for one person's own machines.
 - **The owner's sessions are read-only.** The executor never resumes or writes a session it did not
   start. Forking reads the old transcript and writes a new one. If the owner later adopts a bridge
   session into their own UI (e.g. Claude Desktop's import), stop continuing it from the bridge —
@@ -51,8 +57,6 @@ Network failures are ambiguous. The bridge never converts ambiguity into a retry
 - Multi-tenant hosting: one relay is meant for one owner and their machines.
 - End-to-end encryption between caller and peer: the relay sees prompts and results. Run it
   yourself, behind TLS.
-- Per-caller session isolation: callers granted the same peer share its bridge sessions, including
-  read, continue and stop operations. Session ownership is not tracked per caller.
 - Read isolation by workspace: workspace names select a working directory, not an OS security
   boundary. Codex's `workspace-write` sandbox can allow reads outside that directory; existing MCP
   integrations and local credentials also need their own access controls.

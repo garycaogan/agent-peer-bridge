@@ -17,6 +17,8 @@ class CodexBackend:
     name = "codex"
     preassigns_ids = False
     supports_fork = False
+    # Per-caller permission settings the machine owner may set in the executor config.
+    permission_keys = {"sandbox": {"read-only", "workspace-write", "danger-full-access"}}
 
     def __init__(self, options):
         self.binary = options.get("binary") or shutil.which("codex")
@@ -26,10 +28,11 @@ class CodexBackend:
         self.sandbox = options.get("sandbox", "workspace-write")
         self.extra = list(options.get("extra_args", []))
 
-    def command(self, *, native_id, first_turn, fork_native, model, effort, title):
+    def command(self, *, native_id, first_turn, fork_native, model, effort, title, permission=None, rules=None):
         if fork_native:
             raise ValueError("the codex backend cannot fork sessions")
-        argv = [self.binary, "exec", "--json", "--skip-git-repo-check", "--sandbox", self.sandbox,
+        sandbox = (permission or {}).get("sandbox", self.sandbox)
+        argv = [self.binary, "exec", "--json", "--skip-git-repo-check", "--sandbox", sandbox,
                 "-c", "approval_policy=never", *self.extra]
         if model:
             argv += ["--model", model]
@@ -39,6 +42,13 @@ class CodexBackend:
             argv += ["resume", native_id]
         argv.append("-")  # read the prompt from stdin
         return argv, {}
+
+    @staticmethod
+    def prompt(text, rules):
+        # The owner's rules for this caller lead every turn, so they hold on resumed threads too.
+        if not rules:
+            return text
+        return f"[Rules from the machine owner for this requester]\n{rules}\n\n[Request]\n{text}"
 
     @staticmethod
     def native_id_from(record):

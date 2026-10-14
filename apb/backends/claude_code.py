@@ -38,6 +38,8 @@ class ClaudeCodeBackend:
     name = "claude-code"
     preassigns_ids = True      # we pick the session UUID, so it is known before the first output line
     supports_fork = True
+    # Per-caller permission settings the machine owner may set in the executor config.
+    permission_keys = {"permission_mode": {"auto", "acceptEdits", "plan", "dontAsk", "manual", "bypassPermissions"}}
 
     def __init__(self, options):
         self.binary = _binary(options.get("binary"))
@@ -46,9 +48,12 @@ class ClaudeCodeBackend:
         token_file = options.get("oauth_token_file")  # from `claude setup-token`, for unattended use
         self.token = read_secret(token_file) if token_file else None
 
-    def command(self, *, native_id, first_turn, fork_native, model, effort, title):
+    def command(self, *, native_id, first_turn, fork_native, model, effort, title, permission=None, rules=None):
+        mode = (permission or {}).get("permission_mode", self.permission_mode)
         argv = [self.binary, "-p", "--output-format", "stream-json", "--verbose",
-                "--permission-mode", self.permission_mode, "--permission-prompts", "none"]
+                "--permission-mode", mode, "--permission-prompts", "none"]
+        if rules:  # the owner's rules for this caller, re-applied on every turn
+            argv += ["--append-system-prompt", rules]
         if title:
             argv += ["-n", title]
         if model:
@@ -63,6 +68,10 @@ class ClaudeCodeBackend:
             argv += ["--resume", native_id]
         env = {"CLAUDE_CODE_OAUTH_TOKEN": self.token} if self.token else {}
         return argv, env  # the prompt goes to stdin, so text starting with "-" is never parsed as a flag
+
+    @staticmethod
+    def prompt(text, rules):
+        return text  # rules travel as an appended system prompt instead
 
     @staticmethod
     def native_id_from(record):

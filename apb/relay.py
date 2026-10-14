@@ -253,7 +253,10 @@ class Relay:
             db.execute("UPDATE requests SET status='claimed',delivery_hash=?,delivery_deadline=?,updated_at=? WHERE id=?",
                        (digest(delivery), now + DELIVERY_TTL, now, row["id"]))
             claimed = self.view(db.execute("SELECT * FROM requests WHERE id=?", (row["id"],)).fetchone())
-            return {key: claimed[key] for key in ("id", "operation", "args")} | {"delivery_token": delivery}
+            # The caller's name comes from its authenticated token, never from the request body, so the
+            # peer can apply per-caller access and rules.
+            return {key: claimed[key] for key in ("id", "operation", "args")} | {
+                "caller": row["caller"], "delivery_token": delivery}
 
     def receive(self, token, body):
         wait = body.get("wait_seconds", 0)

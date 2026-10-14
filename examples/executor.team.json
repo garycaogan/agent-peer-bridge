@@ -1,0 +1,35 @@
+{
+  "relay_url": "https://relay.example.com",
+  "peer_token_file": "~/.agent-peer-bridge/peer.token",
+  "state_dir": "~/.agent-peer-bridge/state",
+  "backend": "claude-code",
+  "backend_options": {
+    "permission_mode": "auto",
+    "oauth_token_file": "~/.agent-peer-bridge/claude-oauth.token"
+  },
+  "workspaces": {
+    "tools": "~/code/team-tools",
+    "docs": "~/code/handbook"
+  },
+  "callers": {
+    "anqi": {
+      "workspaces": ["tools"],
+      "rules": "You are working for Anqi (operations). Fix and ship reversible changes yourself; stop and say so before anything that touches pricing.",
+      "permission": {"permission_mode": "auto"}
+    },
+    "bonnie": {
+      "workspaces": ["tools"],
+      "rules_file": "~/.agent-peer-bridge/rules/bonnie.md"
+    },
+    "intern": {
+      "workspaces": ["docs"],
+      "permission": {"permission_mode": "plan"}
+    },
+    "me": {
+      "workspaces": "*",
+      "read_owner_sessions": true,
+      "see_all_sessions": true
+    }
+  },
+  "max_running": 3
+}

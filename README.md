@@ -3,7 +3,9 @@
 Let coding agents on different machines hand work to each other. An agent on one computer can
 **start, continue, read, list and stop real sessions** of the agent on another computer —
 Claude Code ↔ Codex, or any mix — through a small relay. Neither machine opens a port, and the
-caller never gets more power than the owner of the other machine allowed.
+caller never gets more power than the owner of the other machine allowed. The same mechanism lets a
+whole team, and each teammate's own agent, use the best-equipped agent you have, each person with
+their own workspaces, permissions and rules.
 
 [中文说明](README.zh-CN.md)
 
@@ -38,6 +40,7 @@ on purpose, each with a readable transcript.
 | Scoped credentials | Each caller token may address only the peers it was granted. Peer tokens can only take work for themselves. Tokens are stored hashed and shown once. |
 | Owner-fixed permissions | Permission mode / sandbox come from the executor's local config. A request cannot change them; the relay rejects unknown arguments. |
 | Named workspaces | Callers pick a workspace *name*; only the executor maps names to directories. No paths travel over the wire. |
+| Per-person access | Each caller gets its own workspaces, permission setting and standing rules, and sees only its own sessions. |
 | Your sessions stay yours | Sessions the owner ran by hand are listed and readable, never written. To build on one, fork it into a new session. |
 | Honest outcomes | `client_id` makes every write idempotent. A claimed request that is not answered in time becomes `uncertain`, never silently retried. "Accepted" is never reported as "done". |
 
@@ -100,6 +103,35 @@ The agent now has `list_peers`, `start_session`, `send_message`, `read_session`,
 `stop_session` and `request_status`.
 
 **Two-way:** run an executor on both machines and give each side a caller token for the other.
+
+## Share your agent with a team
+
+The machine with the best-equipped agent — your projects, notes, skills and habits already loaded —
+can serve everyone. Give each teammate (or their own agent) a caller token, then say in the executor
+config what each of them gets:
+
+```json
+"callers": {
+  "anqi":   {"workspaces": ["tools"],
+             "rules": "You are working for Anqi (operations). Fix and ship reversible changes yourself; stop and say so before anything that touches pricing.",
+             "permission": {"permission_mode": "auto"}},
+  "bonnie": {"workspaces": ["tools"], "rules_file": "~/.agent-peer-bridge/rules/bonnie.md"},
+  "intern": {"workspaces": ["docs"], "permission": {"permission_mode": "plan"}},
+  "me":     {"workspaces": "*", "read_owner_sessions": true, "see_all_sessions": true}
+}
+```
+
+| Setting | Effect |
+| --- | --- |
+| `workspaces` | Named workspaces this caller may start sessions in (`"*"` for all). |
+| `rules` / `rules_file` | Your standing instructions for this caller, applied on every turn: appended to the system prompt (Claude Code) or placed before the prompt (Codex). A rules file is re-read each turn, so edits apply without a restart. |
+| `permission` | This caller's own permission setting: `permission_mode` for Claude Code (e.g. `plan` for someone who only asks questions), `sandbox` for Codex (e.g. `read-only`). |
+| `read_owner_sessions` | May list and read — never write — the sessions you ran yourself in its workspaces. This is how your accumulated context is shared. |
+| `see_all_sessions` | May see other callers' bridge sessions. By default everyone sees only their own. |
+
+Callers that are not listed are refused. Without a `callers` section the executor runs in open mode
+(every admitted caller gets everything), which suits one person with two machines. A full example is
+in [`examples/executor.team.json`](examples/executor.team.json).
 
 ## Operations
 

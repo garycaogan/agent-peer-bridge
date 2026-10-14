@@ -86,8 +86,8 @@ class ExecutorFailureTest(unittest.TestCase):
         self.fail("test agent did not finish")
 
     def test_concurrent_stderr_only_failures_keep_exit_status(self):
-        first = self.executor.op_start_session("first", "scratch")["session_id"]
-        second = self.executor.op_start_session("second", "scratch")["session_id"]
+        first = self.executor.op_start_session(self.executor.policy(None), "first", "scratch")["session_id"]
+        second = self.executor.op_start_session(self.executor.policy(None), "second", "scratch")["session_id"]
         self.wait_idle()
         for sid, code in [(first, 7), (second, 9)]:
             item = self.executor.sessions[sid]
@@ -98,14 +98,14 @@ class ExecutorFailureTest(unittest.TestCase):
             self.assertEqual(Path(item["stderr_log"]).stat().st_mode & 0o777, 0o600)
 
     def test_success_does_not_expose_stderr(self):
-        sid = self.executor.op_start_session("success", "scratch")["session_id"]
+        sid = self.executor.op_start_session(self.executor.policy(None), "success", "scratch")["session_id"]
         self.wait_idle()
         self.assertEqual(self.executor.sessions[sid]["last_result"]["result"], "ready")
         self.assertFalse(self.executor.sessions[sid]["last_result"]["is_error"])
 
     def test_configured_token_is_redacted_from_failure(self):
         self.executor.backend.token = "test-private-token"
-        sid = self.executor.op_start_session("test-private-token", "scratch")["session_id"]
+        sid = self.executor.op_start_session(self.executor.policy(None), "test-private-token", "scratch")["session_id"]
         self.wait_idle()
         result = self.executor.sessions[sid]["last_result"]["result"]
         self.assertNotIn("test-private-token", result)
@@ -125,6 +125,21 @@ class RelayConnectionTest(unittest.TestCase):
                 db.execute("SELECT 1")
             with relay.db() as reopened:
                 self.assertEqual(reopened.execute("SELECT COUNT(*) FROM principals").fetchone()[0], 0)
+
+
+
+
+class CodexPerCallerTest(unittest.TestCase):
+    def test_rules_lead_the_prompt_and_sandbox_follows_the_caller(self):
+        backend = CodexBackend({"binary": "/usr/bin/true"})
+        self.assertEqual(backend.prompt("do it", None), "do it")
+        wrapped = backend.prompt("do it", "Only touch the docs folder.")
+        self.assertTrue(wrapped.index("Only touch the docs folder.") < wrapped.index("do it"))
+        argv, _ = backend.command(native_id=None, first_turn=True, fork_native=None, model=None, effort=None,
+                                  title=None, permission={"sandbox": "read-only"}, rules="x")
+        self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
+        argv, _ = backend.command(native_id="t1", first_turn=False, fork_native=None, model=None, effort=None, title=None)
+        self.assertEqual(argv[argv.index("--sandbox") + 1], "workspace-write")
 
 
 if __name__ == "__main__":

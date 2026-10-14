@@ -179,6 +179,115 @@ class RelayStateTest(unittest.TestCase):
             self.relay.claim(self.peer, "rx:one")
 
 
+SPY_AGENT = r'''#!{python}
+import json, sys
+args = sys.argv[1:]
+sid = args[args.index("--session-id") + 1] if "--session-id" in args else args[args.index("--resume") + 1]
+mode = args[args.index("--permission-mode") + 1]
+rules = args[args.index("--append-system-prompt") + 1] if "--append-system-prompt" in args else ""
+prompt = sys.stdin.read()
+print(json.dumps({{"type": "system", "subtype": "init", "session_id": sid}}))
+print(json.dumps({{"type": "result", "is_error": False, "result": "mode=%s rules=%s prompt=%s" % (mode, rules, prompt)}}))
+'''
+
+
+class PerCallerPolicyTest(unittest.TestCase):
+    """A team setup: two colleagues with their own workspaces, permissions and rules, plus the owner."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="apb-team-"))
+        relay = relay_mod.Relay(str(self.tmp / "relay.db"))
+        peer_token = relay.add("owner-mac", "peer")
+        tokens = {name: relay.add(name, "caller", ["owner-mac"]) for name in ("anqi", "bonnie", "gary", "stranger")}
+        self.server = relay_mod.serve(relay, "127.0.0.1", 0)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        url = f"http://127.0.0.1:{self.server.server_address[1]}"
+
+        claude_code.HOME = self.tmp / "home"
+        tools, private = self.tmp / "tools", self.tmp / "private"
+        tools.mkdir(), private.mkdir()
+        native_dir = claude_code.HOME / ".claude" / "projects" / claude_code.re.sub(r"[^A-Za-z0-9]", "-", str(tools.resolve()))
+        native_dir.mkdir(parents=True)
+        (native_dir / "owner-chat.jsonl").write_text(json.dumps({"type": "user", "message": {"content": "owner notes"}}) + "\n")
+        spy = self.tmp / "claude"
+        spy.write_text(SPY_AGENT.format(python=sys.executable))
+        spy.chmod(0o700)
+        self.rules_file = self.tmp / "bonnie.md"
+        self.rules_file.write_text("BONNIE-RULES-V1")
+        config = {"state_dir": str(self.tmp / "state"), "workspaces": {"tools": str(tools), "private": str(private)},
+                  "backend": "claude-code", "backend_options": {"binary": str(spy)},
+                  "callers": {
+                      "anqi": {"workspaces": ["tools"], "rules": "ANQI-RULES", "permission": {"permission_mode": "plan"}},
+                      "bonnie": {"workspaces": ["tools"], "rules_file": str(self.rules_file)},
+                      "gary": {"workspaces": "*", "read_owner_sessions": True, "see_all_sessions": True}}}
+        self.executor = Executor(config, RelayClient(url, peer_token))
+        self.stop = threading.Event()
+        threading.Thread(target=self.loop, daemon=True).start()
+        self.as_ = {name: Adapter(RelayClient(url, token)) for name, token in tokens.items()}
+
+    def loop(self):
+        import apb.executor as executor_mod
+        executor_mod.POLL_SECONDS = 1
+        while not self.stop.is_set():
+            self.executor.pump()
+            self.executor.serve_once()
+
+    def tearDown(self):
+        self.stop.set()
+        self.server.shutdown()
+
+    def call(self, who, name, **args):
+        return self.as_[who].call(name, dict(args, peer="owner-mac"))
+
+    def result_of(self, who, sid, turns=1):
+        for _ in range(100):
+            read = self.call(who, "read_session", session_id=sid)["result"]
+            if read.get("turns", 0) >= turns and read.get("status") == "idle":
+                return read["last_result"]["result"]
+            time.sleep(0.2)
+        self.fail("session never finished")
+
+    def test_workspaces_rules_and_permissions_follow_the_caller(self):
+        denied = self.call("anqi", "start_session", workspace="private", text="x", client_id="anqi-0001")
+        self.assertTrue(denied["is_error"] and "available to you: ['tools']" in denied["result"]["reason"], denied)
+        sid = self.call("anqi", "start_session", workspace="tools", text="fix it", client_id="anqi-0002")["result"]["session_id"]
+        self.assertEqual(self.result_of("anqi", sid), "mode=plan rules=ANQI-RULES prompt=fix it")
+        bonnie = self.call("bonnie", "start_session", workspace="tools", text="hi", client_id="bonnie-001")["result"]["session_id"]
+        self.assertEqual(self.result_of("bonnie", bonnie), "mode=auto rules=BONNIE-RULES-V1 prompt=hi")
+        self.rules_file.write_text("BONNIE-RULES-V2")  # edited rules apply from the next turn, no restart
+        self.call("bonnie", "send_message", session_id=bonnie, text="again", client_id="bonnie-002")
+        self.assertEqual(self.result_of("bonnie", bonnie, turns=2), "mode=auto rules=BONNIE-RULES-V2 prompt=again")
+
+    def test_sessions_are_private_to_their_caller_except_for_the_owner(self):
+        sid = self.call("anqi", "start_session", workspace="tools", text="mine", client_id="anqi-0003")["result"]["session_id"]
+        self.result_of("anqi", sid)
+        for op, extra in (("read_session", {}), ("send_message", {"text": "x", "client_id": "bonnie-003"}),
+                          ("stop_session", {"client_id": "bonnie-004"})):
+            reply = self.call("bonnie", op, session_id=sid, **extra)
+            self.assertTrue(reply["is_error"], f"bonnie must not {op} anqi's session: {reply}")
+        listed = self.call("bonnie", "list_sessions")["result"]["sessions"]
+        self.assertNotIn(sid, [row["session_id"] for row in listed])
+        self.assertEqual(self.call("gary", "read_session", session_id=sid)["result"]["kind"], "bridge")
+
+    def test_owner_sessions_and_unknown_callers(self):
+        anqi_rows = self.call("anqi", "list_sessions")["result"]["sessions"]
+        self.assertFalse([r for r in anqi_rows if r["kind"] == "native_read_only"], "anqi was not granted owner sessions")
+        gary_rows = self.call("gary", "list_sessions")["result"]["sessions"]
+        native = next(r["session_id"] for r in gary_rows if r["kind"] == "native_read_only")
+        self.assertTrue(self.call("anqi", "read_session", session_id=native)["is_error"])
+        self.assertEqual(self.call("gary", "read_session", session_id=native)["result"]["events"][0]["text"], "owner notes")
+        stranger = self.call("stranger", "list_sessions")
+        self.assertTrue(stranger["is_error"] and "not allowed" in stranger["result"]["reason"], stranger)
+
+    def test_bad_config_is_refused_at_startup(self):
+        base = {"state_dir": str(self.tmp / "other"), "workspaces": {"tools": str(self.tmp / "tools")},
+                "backend": "claude-code", "backend_options": {"binary": "/nonexistent"}}
+        for callers in ({"x": {"workspaces": ["nope"]}}, {"x": {"permission": {"sandbox": "read-only"}}},
+                        {"x": {"admin": True}}):
+            with self.assertRaises(SystemExit):
+                Executor(dict(base, callers=callers))
+
+
 class ExecutorReliabilityTest(unittest.TestCase):
     def config(self, state):
         workspace = Path(tempfile.mkdtemp())
