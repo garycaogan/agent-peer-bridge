@@ -1,4 +1,4 @@
-# agent-peer-bridge
+# agent-peer-bridge · 借脑
 
 Let coding agents on different machines hand work to each other. An agent on one computer can
 **start, continue, read, list and stop real sessions** of the agent on another computer —
@@ -7,7 +7,20 @@ caller never gets more power than the owner of the other machine allowed. The sa
 whole team, and each teammate's own agent, use the best-equipped agent you have, each person with
 their own workspaces, permissions and rules.
 
-[中文说明](README.zh-CN.md)
+[中文介绍](#中文介绍) · [完整中文说明](README.zh-CN.md)
+
+## 中文介绍
+
+**借脑**：把团队里 AI 用得最好的那个人的 AI，借给团队里的每个人。
+
+团队里总有一个人，他电脑上的 AI 被喂了几个月的项目、资料、技能和做事规矩，是全团队最懂业务的那个。以前大家有需求都得先找他，他理解完再转述给自己的 AI，做完再一个个告诉大家，他就成了整个团队的中转站，他一忙，所有事都卡住。
+
+借脑做的事很简单：让同事，或者同事自己的 AI（Claude、Codex 都行），直接对接这个 AI。可以新开对话、接着聊、看进度、随时叫停，一件事开一个新对话，不会把一个对话越聊越长。每个人能进哪些项目、能动到什么程度、守什么规矩，都由 AI 的主人单独配置，每个人默认只看得到自己的对话；碰到需要人点头的操作，AI 会停下来如实报告，不会自己越权，审批权一直在主人手里。
+
+两台电脑都不用开放端口，谁也拿不到超过主人允许范围的权限。它也能让你自己两台电脑上的 AI 互相派活，比如 Mac mini 上的 Claude 找主力电脑上的 Codex 干活，反过来也行。
+
+怎么装？把这个仓库的链接丢给你自己的 Claude 或者 Codex，让它照着说明帮你装。[完整中文说明 →](README.zh-CN.md)
+
 
 ```
  machine A (e.g. Codex)                    relay (HTTPS)                 machine B (e.g. Claude Code)
