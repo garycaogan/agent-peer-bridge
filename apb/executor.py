@@ -143,7 +143,8 @@ def _alive_windows(pid):
 def interrupt(pid):
     """Stop a running turn with everything it started: its process group, or its process tree on Windows."""
     if WINDOWS:
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True,
+                       creationflags=subprocess.CREATE_NO_WINDOW)
         return
     try:
         os.killpg(pid, signal.SIGINT)
@@ -263,8 +264,10 @@ class Executor:
             os.chmod(err_path, 0o600)
             prompt.write(text.encode())
             prompt.seek(0)
-            # Own process group, so a stop reaches the agent's children too.
-            group = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS else {"start_new_session": True}
+            # Own process group, so a stop reaches the agent's children too. On Windows no console window
+            # either: an executor started in the background would otherwise pop one up for every turn.
+            group = ({"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.CREATE_NO_WINDOW} if WINDOWS
+                     else {"start_new_session": True})
             process = subprocess.Popen(argv, cwd=item["cwd"], env={**self.backend.clean_env(), **extra_env},
                                        stdin=prompt, stdout=out, stderr=err, **group)
         self.processes[sid] = process
