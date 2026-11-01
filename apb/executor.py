@@ -64,7 +64,7 @@ class Policy:
     def rules(self):
         parts = [self._rules] if self._rules else []
         if self._rules_file:  # read on every turn, so edits apply without restarting the executor
-            parts.append(Path(self._rules_file).expanduser().read_text(encoding="utf-8").strip())
+            parts.append(Path(self._rules_file).expanduser().read_text(encoding="utf-8-sig").strip())
         return "\n\n".join(part for part in parts if part) or None
 
 
@@ -493,7 +493,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="agent-peer-bridge executor")
     parser.add_argument("--config", default="~/.agent-peer-bridge/executor.json")
     args = parser.parse_args(argv)
-    config = json.loads(Path(args.config).expanduser().read_text(encoding="utf-8"))
+    config = json.loads(Path(args.config).expanduser().read_text(encoding="utf-8-sig"))  # Windows editors may add a BOM
     relay = RelayClient(config["relay_url"], read_secret(config["peer_token_file"]))
     Executor(config, relay).run()
 

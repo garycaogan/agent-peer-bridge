@@ -29,7 +29,7 @@ def read_secret(path):
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or (os.name != "nt" and (info.st_mode & 0o077 or info.st_uid != os.getuid())):
         raise RelayError("unsafe_token_file", f"{path} must be a regular file readable only by you (chmod 600)")
-    return path.read_text(encoding="utf-8").strip()
+    return path.read_text(encoding="utf-8-sig").strip()  # tolerate a BOM from Windows editors
 
 
 class RelayClient:
