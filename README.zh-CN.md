@@ -52,7 +52,7 @@ apb-relay --db relay.db serve --host 127.0.0.1 --port 8787
 apb-executor --config ~/.agent-peer-bridge/executor.json
 ```
 
-用 launchd 或 systemd 让它常驻，示例同样在 [`examples/`](examples) 里。Claude Code 要无人值守运行的话，先用 `claude setup-token` 生成一个长期令牌，再在配置的 `backend_options.oauth_token_file` 里指向它。
+用 launchd 或 systemd 让它常驻，示例同样在 [`examples/`](examples) 里。Windows 上用任务计划程序建一个登录时启动的任务，用 `pythonw.exe` 运行它，不会弹窗；`backend_options.binary` 写 `codex.cmd`（或 `claude.exe`）的完整路径。Claude Code 要无人值守运行的话，先用 `claude setup-token` 生成一个长期令牌，再在配置的 `backend_options.oauth_token_file` 里指向它。
 
 **3. MCP 适配器**：装在派活的那台机器上，注册给那边的智能体用，具体写法见英文 README。注册之后，智能体就有了 `list_peers`、`start_session`、`send_message`、`read_session`、`list_sessions`、`stop_session` 和 `request_status` 这几个工具。
 

@@ -94,7 +94,7 @@ write a config (see [`examples/`](examples)):
 apb-executor --config ~/.agent-peer-bridge/executor.json
 ```
 
-Keep it running with launchd or systemd ([`examples/`](examples)). For unattended Claude Code, create
+Keep it running with launchd or systemd ([`examples/`](examples)), or on Windows with a Task Scheduler task at logon that starts it under `pythonw.exe`. On Windows, point `backend_options.binary` at the full path of `codex.cmd` (or `claude.exe`). For unattended Claude Code, create
 a long-lived token with `claude setup-token` and point `backend_options.oauth_token_file` at it.
 
 **3. MCP adapter** on the machine that sends work, registered with its agent:
