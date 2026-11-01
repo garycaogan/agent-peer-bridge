@@ -18,6 +18,9 @@ class RelayError(Exception):
         self.code, self.uncertain = code, uncertain
 
 
+USER_AGENT = "agent-peer-bridge/0.1"
+
+
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):  # never forward the bearer token elsewhere
         return None
@@ -51,7 +54,9 @@ class RelayClient:
     def call(self, method, path, payload=None):
         data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode()
         request = urllib.request.Request(self.base + path, data=data, method=method, headers={
-            "Authorization": "Bearer " + self._token, "Content-Type": "application/json", "Accept": "application/json"})
+            "Authorization": "Bearer " + self._token, "Content-Type": "application/json", "Accept": "application/json",
+            # Cloudflare's browser integrity check answers 403 to the default "Python-urllib/x.y" agent
+            "User-Agent": USER_AGENT})
         write = method != "GET"
         try:
             with self._opener.open(request, timeout=self.timeout) as response:
