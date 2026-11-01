@@ -16,7 +16,6 @@ Rules this file enforces (see docs/security.md):
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import os
 import re
@@ -27,6 +26,13 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+
+WINDOWS = os.name == "nt"
+if WINDOWS:
+    import ctypes
+    import msvcrt
+else:
+    import fcntl
 
 from .backends.claude_code import ClaudeCodeBackend
 from .backends.codex import CodexBackend
@@ -79,9 +85,27 @@ def write_private_json(path, value):
             os.unlink(name)
 
 
+def lock_exclusive(stream):
+    """Take an exclusive lock on an open file without waiting; False if another process holds it."""
+    try:
+        if WINDOWS:
+            msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except BlockingIOError:
+        return False
+    except OSError:
+        if WINDOWS:  # msvcrt reports a held lock as a plain OSError
+            return False
+        raise
+
+
 def alive(pid):
     if not pid:
         return False, None
+    if WINDOWS:
+        return _alive_windows(pid)
     try:
         done, status = os.waitpid(pid, os.WNOHANG)  # reap our own children
         if done:
@@ -97,6 +121,36 @@ def alive(pid):
             return True, None
 
 
+def _alive_windows(pid):
+    # os.kill(pid, 0) would terminate the process on Windows, so ask the kernel for its exit code instead.
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
+    kernel32.GetExitCodeProcess.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong))
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+    if not handle:
+        return ctypes.get_last_error() == 5, None  # access denied: it exists; anything else: it is gone
+    try:
+        code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return True, None
+        return (True, None) if code.value == 259 else (False, code.value)  # 259 = STILL_ACTIVE
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def interrupt(pid):
+    """Stop a running turn with everything it started: its process group, or its process tree on Windows."""
+    if WINDOWS:
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+        return
+    try:
+        os.killpg(pid, signal.SIGINT)
+    except ProcessLookupError:
+        pass
+
+
 class Executor:
     def __init__(self, config, relay=None):
         self.state = Path(config.get("state_dir", "~/.agent-peer-bridge/state")).expanduser()
@@ -104,10 +158,8 @@ class Executor:
         (self.state / "turns").mkdir(exist_ok=True, mode=0o700)
         # One executor per state directory: a second one would race on the registry and the queue.
         self._lock = open(self.state / "executor.lock", "w")
-        try:
-            fcntl.flock(self._lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise SystemExit(f"another executor is already using {self.state}") from None
+        if not lock_exclusive(self._lock):
+            raise SystemExit(f"another executor is already using {self.state}")
         self.workspaces = {name: str(Path(path).expanduser().resolve(strict=True))
                            for name, path in config["workspaces"].items()}
         self.backend = BACKENDS[config.get("backend", "claude-code")](config.get("backend_options", {}))
@@ -115,13 +167,13 @@ class Executor:
         self.max_running = int(config.get("max_running", 3))
         self.relay = relay
         self.registry_path = self.state / "sessions.json"
-        self.sessions = json.loads(self.registry_path.read_text()) if self.registry_path.exists() else {}
+        self.sessions = json.loads(self.registry_path.read_text(encoding="utf-8")) if self.registry_path.exists() else {}
         self.processes = {}  # keep child handles so another Popen cannot reap their exit status
         self.recover_interrupted_launches()
         receiver = self.state / "receiver.id"  # stable, so a restart resumes its own relay lease
         if not receiver.exists():
-            receiver.write_text("exec_" + uuid.uuid4().hex)
-        self.receiver_id = receiver.read_text().strip()
+            receiver.write_text("exec_" + uuid.uuid4().hex, encoding="utf-8")
+        self.receiver_id = receiver.read_text(encoding="utf-8").strip()
 
     def save(self):
         write_private_json(self.registry_path, self.sessions)
@@ -211,8 +263,10 @@ class Executor:
             os.chmod(err_path, 0o600)
             prompt.write(text.encode())
             prompt.seek(0)
+            # Own process group, so a stop reaches the agent's children too.
+            group = {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP} if WINDOWS else {"start_new_session": True}
             process = subprocess.Popen(argv, cwd=item["cwd"], env={**self.backend.clean_env(), **extra_env},
-                                       stdin=prompt, stdout=out, stderr=err, start_new_session=True)
+                                       stdin=prompt, stdout=out, stderr=err, **group)
         self.processes[sid] = process
         item.pop("launching", None)
         item.update(pid=process.pid, status="running", updated_at=time.time())
@@ -357,10 +411,7 @@ class Executor:
         dropped, item["queue"] = len(item["queue"]), []
         if item.get("pid"):
             item["stop_requested"] = True
-            try:
-                os.killpg(item["pid"], signal.SIGINT)
-            except ProcessLookupError:
-                pass
+            interrupt(item["pid"])
         self.save()
         return {"session_id": session_id, "stop_requested": True, "dropped_queued_messages": dropped,
                 "note": "stopping does not undo actions already taken"}
@@ -435,7 +486,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="agent-peer-bridge executor")
     parser.add_argument("--config", default="~/.agent-peer-bridge/executor.json")
     args = parser.parse_args(argv)
-    config = json.loads(Path(args.config).expanduser().read_text())
+    config = json.loads(Path(args.config).expanduser().read_text(encoding="utf-8"))
     relay = RelayClient(config["relay_url"], read_secret(config["peer_token_file"]))
     Executor(config, relay).run()
 

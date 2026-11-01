@@ -12,6 +12,7 @@ from unittest.mock import patch
 from apb.backends.codex import CodexBackend
 from apb.executor import Executor
 from apb.relay import Relay
+from fakecli import fake_cli
 
 
 class CodexEventsTest(unittest.TestCase):
@@ -54,8 +55,7 @@ class ExecutorFailureTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="apb-codex-test-")
         self.root = Path(self.tmp.name)
-        fake = self.root / "codex"
-        fake.write_text("#!" + sys.executable + "\n" +
+        fake = fake_cli(self.root / "codex", "#!" + sys.executable + "\n" +
                         "import json, sys\n"
                         "text = sys.stdin.read()\n"
                         "if text == 'success':\n"
@@ -65,9 +65,8 @@ class ExecutorFailureTest(unittest.TestCase):
                         " sys.exit(0)\n"
                         "print('Error: no rollout found; ' + text, file=sys.stderr)\n"
                         "sys.exit(7 if text == 'first' else 9)\n")
-        fake.chmod(0o700)
         self.executor = Executor({"state_dir": str(self.root / "state"), "workspaces": {"scratch": str(self.root)},
-                                  "backend": "codex", "backend_options": {"binary": str(fake)}, "max_running": 2})
+                                  "backend": "codex", "backend_options": {"binary": fake}, "max_running": 2})
 
     def tearDown(self):
         for process in list(self.executor.processes.values()):

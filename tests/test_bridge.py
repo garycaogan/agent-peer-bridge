@@ -16,6 +16,7 @@ from apb.backends import claude_code  # noqa: E402
 from apb.executor import Executor  # noqa: E402
 from apb.http import RelayClient, RelayError  # noqa: E402
 from apb.mcp_server import Adapter, serve  # noqa: E402
+from fakecli import fake_cli  # noqa: E402
 
 FAKE_AGENT = r'''#!{python}
 import json, os, sys
@@ -50,11 +51,9 @@ class BridgeTest(unittest.TestCase):
         native_dir = claude_code.HOME / ".claude" / "projects" / claude_code.re.sub(r"[^A-Za-z0-9]", "-", str(workspace.resolve()))
         native_dir.mkdir(parents=True)
         (native_dir / "user-own.jsonl").write_text(json.dumps({"type": "user", "message": {"content": "my own work"}}) + "\n")
-        fake = self.tmp / "claude"
-        fake.write_text(FAKE_AGENT.format(python=sys.executable, state=str(self.tmp)))
-        fake.chmod(0o700)
+        fake = fake_cli(self.tmp / "claude", FAKE_AGENT.format(python=sys.executable, state=str(self.tmp)))
         config = {"state_dir": str(self.tmp / "state"), "workspaces": {"main": str(workspace)},
-                  "backend": "claude-code", "backend_options": {"binary": str(fake)}}
+                  "backend": "claude-code", "backend_options": {"binary": fake}}
         self.executor = Executor(config, RelayClient(self.url, self.peer_token))
         self.stop = threading.Event()
         self.worker = threading.Thread(target=self.run_executor, daemon=True)
@@ -209,13 +208,11 @@ class PerCallerPolicyTest(unittest.TestCase):
         native_dir = claude_code.HOME / ".claude" / "projects" / claude_code.re.sub(r"[^A-Za-z0-9]", "-", str(tools.resolve()))
         native_dir.mkdir(parents=True)
         (native_dir / "owner-chat.jsonl").write_text(json.dumps({"type": "user", "message": {"content": "owner notes"}}) + "\n")
-        spy = self.tmp / "claude"
-        spy.write_text(SPY_AGENT.format(python=sys.executable))
-        spy.chmod(0o700)
+        spy = fake_cli(self.tmp / "claude", SPY_AGENT.format(python=sys.executable))
         self.rules_file = self.tmp / "bonnie.md"
         self.rules_file.write_text("BONNIE-RULES-V1")
         config = {"state_dir": str(self.tmp / "state"), "workspaces": {"tools": str(tools), "private": str(private)},
-                  "backend": "claude-code", "backend_options": {"binary": str(spy)},
+                  "backend": "claude-code", "backend_options": {"binary": spy},
                   "callers": {
                       "anqi": {"workspaces": ["tools"], "rules": "ANQI-RULES", "permission": {"permission_mode": "plan"}},
                       "bonnie": {"workspaces": ["tools"], "rules_file": str(self.rules_file)},
