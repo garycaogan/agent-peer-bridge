@@ -73,6 +73,7 @@ class ExecutorFailureTest(unittest.TestCase):
             if process.poll() is None:
                 process.kill()
             process.wait()
+        self.executor.close()
         self.tmp.cleanup()
 
     def wait_idle(self):
@@ -94,7 +95,8 @@ class ExecutorFailureTest(unittest.TestCase):
             self.assertTrue(result["is_error"])
             self.assertEqual(result["exit_code"], code)
             self.assertIn("no rollout found", result["result"])
-            self.assertEqual(Path(item["stderr_log"]).stat().st_mode & 0o777, 0o600)
+            if os.name != "nt":  # Windows has no owner-only mode bits
+                self.assertEqual(Path(item["stderr_log"]).stat().st_mode & 0o777, 0o600)
 
     def test_success_does_not_expose_stderr(self):
         sid = self.executor.op_start_session(self.executor.policy(None), "success", "scratch")["session_id"]

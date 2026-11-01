@@ -276,6 +276,10 @@ class Executor:
         self.save()
         log(f"launched session={sid} turn={item['turns']} pid={process.pid}")
 
+    def close(self):
+        """Release the state directory (Windows will not delete a directory whose lock file is open)."""
+        self._lock.close()
+
     @staticmethod
     def records(paths):
         for path in paths:
